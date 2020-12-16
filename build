@@ -1,0 +1,36 @@
+export http_proxy=http://192.168.9.101:8001
+export https_proxy=http://192.168.9.101:8001
+
+apt update
+apt install -y sudo git python vim lsb-release
+git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+export PATH="$PATH:/path/to/depot_tools"
+source ~/.bashrc
+mkdir ~/chromium && cd ~/chromium
+fetch --nohooks chromium
+gclient sync --nohooks
+cd src
+git fetch --tags
+git checkout -b stable_77 tags/79.0.3945.107
+gclient sync --with_branch_heads --nohooks --job 16
+build/install-build-deps-android.sh
+gclient runhooks
+gn args out/Default
+
+target_os = "android"
+target_cpu = "arm"
+symbol_level = 0
+is_debug = false
+is_official_build = true
+enable_remoting = true
+is_component_build = false
+is_chrome_branded = false
+use_official_google_api_keys = false
+enable_resource_whitelist_generation = true
+enable_nacl = false
+remove_webcore_debug_symbols = true
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
+android_channel = "stable"
+
+autoninja -C out/Default system_webview_apk
