@@ -19,7 +19,6 @@ gn args out/Default
 
 target_os = "android"
 target_cpu = "arm"
-symbol_level = 0
 is_debug = false
 is_official_build = true
 enable_remoting = true
@@ -28,7 +27,6 @@ is_chrome_branded = false
 use_official_google_api_keys = false
 enable_resource_whitelist_generation = true
 enable_nacl = false
-remove_webcore_debug_symbols = true
 proprietary_codecs = true
 ffmpeg_branding = "Chrome"
 android_channel = "stable"

@@ -1,0 +1,350 @@
+#args.gn参数
+
+target_os =  "android"
+
+target_cpu = "arm"
+arm或者arm64
+
+is_component_build = false
+这个选项值可以为true或者false，false时代码编译成单个so。一般我们编译debug版本时，设置 true，这样每次改动编译链接花费的时间就会减少很多。编译release版本时，设置 false，这样就可以把所有代码编译到一个so里面。
+
+is_official_build = true
+这个选项值可以为true或者false。控制是否启用official编译模式。official编译模式会进行代码编译优化，非常耗时。仅发布的时候设置成is_official_build = true开启优化。
+
+is_debug = false
+这个选项值可以为true或者false。当为true时编译debug版本，false时编译release版本。
+
+enable_remoting = true
+启动远程
+
+is_chrome_branded = false
+是否包括Chrome专用的内容
+
+use_official_google_api_keys = false
+使用官方Google API密钥
+
+enable_resource_whitelist_generation = true
+启用资源白名单生成
+
+enable_nacl = false
+这个选项值可以为true或者false。控制是否启用Native Client，通常我们并不需要。所以把其值设置成 false。
+
+proprietary_codecs = true
+控制代码编译支持的多媒体格式跟chrome一样，支持mp4等格式。
+
+ffmpeg_branding = "Chrome"
+控制代码编译支持的多媒体格式跟chrome一样，支持mp4等格式。
+
+android_channel = "stable"
+
+````````````````````````````````````````````````````````````````````````````````````````````````````````````
+
+bromite浏览器参数
+android_channel="stable"
+blink_symbol_level=1
+chrome_pgo_phase=0
+dcheck_always_on=false
+debuggable_apks=false
+dfmify_dev_ui=false
+disable_android_lint=true
+disable_autofill_assistant_dfm=true
+disable_tab_ui_dfm=true
+enable_av1_decoder=true
+enable_dav1d_decoder=true
+enable_gvr_services=false
+enable_hangout_services_extension=false
+enable_iterator_debugging=false
+enable_mdns=false
+enable_mse_mpeg2ts_stream_parser=true
+enable_nacl=false
+enable_nacl_nonsfi=false
+enable_platform_dolby_vision=true
+enable_platform_hevc=true
+enable_remoting=false
+enable_reporting=true
+enable_vr=false
+ffmpeg_branding="Chrome"
+fieldtrial_testing_like_official_build=true
+icu_use_data_file=true
+is_component_build=false  //debug true
+is_debug=false  //debug true
+is_official_build=true  //debug false
+proprietary_codecs=true
+rtc_build_examples=false
+safe_browsing_mode=0
+symbol_level=1
+target_os="android"
+use_debug_fission=true
+use_errorprone_java_compiler=false
+use_official_google_api_keys=false
+use_openh264=true
+use_sysroot=false
+webview_includes_weblayer=false
+
+android_channel="stable"
+Current value = "stable"
+From //out/Default/args.gn:14
+Overridden from the default = "default"
+rom //chrome/android/channel.gni:8
+在Android上构建的渠道：稳定版，测试版，开发人员，金丝雀，工作或默认。 
+在非官方版本中应使用“默认”。
+
+blink_symbol_level=1
+blink构建中要包含多少个符号。 
+这影响由于符号很大并处理他们很慢。
+2表示带有符号的常规构建。
+1表示最小的符号，通常仅用于回溯。 带符号内部链接（静态功能或匿名名称空间中的功能）可能不会在使用此级别时出现。
+0表示没有符号。
+-1表示根据调试/发布和平台自动设置。
+	   
+chrome_pgo_phase=0
+指定当前的PGO阶段。
+这是可以使用的不同值：
+0：表示PGO已关闭。
+1：在PGI（仪器）阶段使用。
+2：在PGO（优化）阶段使用。
+
+dcheck_always_on=false
+是否在发布版本中启用dcheck。
+
+debuggable_apks=false
+默认值= false
+来自//build/config/android/config.gni:180
+将APK标记为android：debuggable =“ true”。
+
+dfmify_dev_ui=false
+默认值= true
+来自//chrome/android/features/dev_ui/dev_ui_module.gni:8
+是否应将开发者用户界面（chrome：//页面）拆分为单独的
+动态功能模块（DFM：//docs/android_dynamic_feature_modules.md）。
+	 
+disable_android_lint=true
+默认值= false
+来自//build/config/android/config.gni:199
+关闭android lint。 对于原型制作或更快的本地构建很有用。
+
+disable_autofill_assistant_dfm=true
+默认值= false
+来自//chrome/android/features/autofill_assistant/autofill_assistant_module.gni:11
+这是一个开发人员标志，能够使用增量构建/安装工作流程进行自动填充
+助理。 
+设置为true时，autofill_assistant被构建为基本apk的一部分，而不是
+单独的功能模块，目前不支持增量构建。
+TODO（http：// crbug / 864142）：安装增量捆绑包后，请删除。
+
+disable_tab_ui_dfm=true
+默认= true
+来自//chrome/android/features/tab_ui/buildflags.gni:7
+控制功能是否为DFM。
+
+enable_av1_decoder=true
+from the default = false
+From //media/media_options.gni:99
+	  
+enable_dav1d_decoder=true
+from the default = false
+From //media/media_options.gni:95
+	  
+enable_gvr_services=false
+from the default = false
+From //base/allocator/BUILD.gn:14
+提供一种在调试版本中强制禁用调试分配的方法，
+例如 进行概要分析（对Debug版本进行概要分析很少见，但人们有时需要这样做）。
+	
+enable_hangout_services_extension=false
+from the default = false
+From //chrome/common/features.gni:49
+环聊服务是一项扩展，可为环聊添加更多功能。
+它可以单独启用以方便测试。
+	
+enable_iterator_debugging=false
+from the default = false
+From //build/config/BUILD.gn:40
+设置时（默认设置）在调试版本中启用C ++迭代器调试。
+在发行版中，迭代器调试始终处于关闭状态（从技术上讲，此标志
+影响“调试”配置，该配置始终可用，但由
+仅在调试版本中默认）。
+迭代器调试通常对于捕获错误很有用。 但是可以
+引入额外的锁定以根据状态检查迭代器的状态
+当前对象的。 对于具有大量迭代器和线程的代码，这可以
+执行速度明显慢-速度下降了两个数量级
+见（crbug.com/903553），并且迭代器调试还会通过以下方式减慢构建速度：
+snapshot_blob.bin的生成需要大约40-60秒的时间。 所以这个
+默认为关闭。
+	
+enable_mdns=false
+from the default = false
+From //net/features.gni:26
+组播DNS。
+	
+enable_mse_mpeg2ts_stream_parser=true
+from the default = false
+From //media/media_options.gni:71
+	  
+enable_nacl=false
+from the default = true
+From //components/nacl/features.gni:18
+mipsel尚不支持非SFI
+	
+enable_nacl_nonsfi=false
+from the default = true
+From //components/nacl/features.gni:18
+mipsel尚不支持非SFI
+	
+enable_platform_dolby_vision=true
+from the default = false
+From //media/media_options.gni:85
+启用Dolby Vision解复用。
+默认启用Chromecast。 实际解码必须由平台提供。 
+注意一些Dolby Vision配置文件使用HEVC进行编码的| enable_platform_hevc | 启用。
+	 
+enable_platform_hevc=true
+from the default = false
+From //media/media_options.gni:80
+启用HEVC / H265解复用。 
+实际的解码必须由平台。 
+默认启用Chromecast。
+	
+enable_remoting=false
+from the default = false
+From //remoting/remoting_options.gni:15
+设置此选项可在构建Web应用程序后运行jscompile检查。
+
+enable_reporting=true
+from the default = true
+From //net/features.gni:29
+报告未在iOS上使用。
+
+enable_vr=false
+from the default = true
+From //device/vr/buildflags/buildflags.gni:35
+	  
+ffmpeg_branding="Chrome"
+Current value = "Chrome"
+From //out/Default/args.gn:13
+Overridden from the default = "Chromium"
+来自//third_party/ffmpeg/ffmpeg_options.gni:34
+控制我们是构建FFmpeg的Chromium版本还是Google Chrome版本。
+Google Chrome版本包含其他编解码器。 典型值为
+Chromium，Chrome和ChromeOS。
+	
+fieldtrial_testing_like_official_build=true
+from the default = false
+From //components/variations/service/BUILD.gn:14
+设置为true会使构建禁用现场试用测试的激活
+在testing / variations / fieldtrial_testing_config.json中指定。
+注意：如果is_chrome_branded，则忽略此设置。
+TODO（thakis）：奇怪的是这叫做“ _like_official_build”，但是
+检查is_chrome_branded，而不是is_official_build。
+	
+icu_use_data_file=true
+from the default = true
+From //third_party/icu/config.gni:8
+告诉icu加载外部数据文件，而不是依赖icudata
+直接链接到二进制文件。
+	
+is_component_build=false
+Current value = false
+From //out/Default/args.gn:5
+Overridden from the default = false
+From //build/config/BUILDCONFIG.gn:165
+组件构建。 
+设置为true会编译声明为“ components”的目标
+作为动态加载的共享库。 这加快了开发时间。
+如果为false，则组件将静态链接。
+
+有关更多信息，请参见
+https://chromium.googlesource.com/chromium/src/+/master/docs/component_build.md
+	             
+is_debug=false
+from the default = false
+From //build/config/BUILDCONFIG.gn:155
+调试版本。 启用官方构建会自动将is_debug设置为false。
+
+is_official_build=true
+Current value = true
+From //out/Default/args.gn:6
+Overridden from the default = false
+From //build/config/BUILDCONFIG.gn:131
+设置为启用官方构建级别的优化。 这没什么
+与品牌相关，但可以在上面进行更多优化
+释放（！is_debug）。 最好用三态表示
+（调试，发布，官方），但由于历史原因，有两个
+单独的标志。
+	
+proprietary_codecs=true
+Current value = true
+From //out/Default/args.gn:12
+Overridden from the default = false
+From //build/config/features.gni:26
+启用专有编解码器和多路分配器； 例如 H264，AAC，MP3和MP4。
+我们始终会使用专有编解码器来构建Google Chrome和Chromecast。
+注意：此标志由DRT嵌入Chrome的WebRTC使用。 移动它
+// build以外的版本将需要使用build_overrides目录。
+
+rtc_build_examples=false
+from the default = true
+From //third_party/webrtc/webrtc.gni:103
+将此设置为false可跳过构建示例。
+	
+safe_browsing_mode=0
+from the default = 2
+From //components/safe_browsing/buildflags.gni:18
+	  
+symbol_level=1
+Current value (from the default) = -1
+From //build/config/compiler/compiler.gni:39
+构建中要包含多少个符号。 
+这会影响由于符号很大，因此处理起来很慢。
+2表示带有符号的常规构建。
+1表示最小的符号，通常仅用于回溯。 带符号
+内部链接（静态功能或匿名名称空间中的功能）可能不会在使用此级别时出现。
+0表示没有符号。
+-1表示根据调试/发布和平台自动设置。
+
+target_os="android"
+Current value = "android"
+From //out/Default/args.gn:3
+尝试 `gn help target_os`
+	  
+use_debug_fission=true
+from the default = "default"
+From //build/config/compiler/compiler.gni:60
+use_debug_fission：是否使用拆分的DWARF调试信息
+文件。 这样可以大大减少链接时间，但是不兼容
+与一些实用程序，如icecc和ccache。 需要黄金和
+gcc> = 4.8或clang。
+http://gcc.gnu.org/wiki/DebugFission
+这是一个占位符值，指示应设置以下代码
+默认值。 这对于延迟评估默认值很有必要
+值表达式，直到其输入值（如use_gold）具有
+已设定，例如 通过toolchain_args（）块。
+
+use_errorprone_java_compiler=false
+from the default = true
+From //build/config/android/config.gni:183
+设置为false以禁用Errorprone编译器
+
+use_official_google_api_keys=false
+Current value = false
+From //out/Default/args.gn:9
+	
+use_openh264=true
+Current value (from the default) = false
+From //third_party/openh264/openh264_args.gni:11
+启用它可以构建OpenH264（用于编码，而不是解码）。
+建造前请检查OPENH264许可/专利，请参阅 http://www.openh264.org/。
+	
+use_sysroot=false
+from the default = true
+From //build/config/sysroot.gni:18
+	  
+webview_includes_weblayer=false
+from the default= true
+From //weblayer/variables.gni:7
+在WebView实现APKs.sysroot中包含// weblayer代码
+
+
+autoninja -C out/Default net
+
+此命令会编译net模块以及所依赖的其他模块，如：`base`、`boringssl`、`crcrypto`等模块。顺利编译完成后，在`out/Default/`目录下即可找到我们所需的so库文件：
