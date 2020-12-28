@@ -1,0 +1,724 @@
+Android WebView启动Chromium渲染
+引擎的过程分析 
+  AndroidWebView加载了Chromium动态库之后，就可以启动Chromium渲染引擎了。Chromium渲染引擎由Browser、Render和GPU三端组成。其中，Browser端负责将网页UI合成在屏幕上，Render端负责加载网页的URL和渲染网页的UI，GPU端负责执行Browser端和Render端请求的GPU命令。本文接下来详细分析Chromium渲染引擎三端的启动过程。  
+Android WebView使用了单进程架构的Chromium来加载和渲染网页，因此它的Browser端、Render端和GPU端都不是以进程的形式存在的，而是以线程的形式存在。其中，Browser端实现在App的UI线程中，Render端实现在一个独立的线程中，而GPU端实现在App的Render Thread中。注意，这是针对Android 5.0及以上版本的。Android在4.4版本引入基于Chromium实现的WebView，那时候GPU端与Browser一样，都是实现在App的UI线程中。接下来我们只讨论Android WebView在Android 5.0及以上版本的实现。  
+       Android WebView启动Chromium渲染引擎三端的过程如图1所示：  
+ 
+从前面一文可以知道，当我们在App的UI中嵌入一个WebView时，WebView会在内部创建一个类型为WebViewChromium的Provider。AndroidWebView就是通过这个Provider来启动和使用Chromium渲染引擎的。  
+       Chromium里面有一个android_webview模块。这个模块提供了两个类
+AwBrowserProcess和AwContents，分别用来封装Chromium的Content层提供的两个接口类BrowserStartupController和ContentViewCore，它们分别用来启动Chromium的Browser端和Render端。  
+       Android WebView启动Chromium的Browser端，实际上就是在App的UI线程创建一个Browser Main Loop。Chromium以后需要请求Browser端执行某一个操作时，就可以向这个Browser Main Loop发送一个Task。这个Task最终会在App进程的UI线程中调度执行。  
+       Android WebView启动Chromium的Render端，实际上就是在当前的App进程中创建一个线程。以后网页就由这个线程负责加载和渲染。这个线程称为In-ProcessRendererThread。  
+       由于Chromium的GPU端实现在App的Render Thread中，这个Render Thread是由App负责启动的，因此Chromium无需启动它。不过，Chromium里的android_webview模块会启动一个DeferredGpuCommandService服务。当Chromium的Browser端和Render端需要执行GPU操作时，就会向DeferredGpuCommandService服务发出请求。这时候DeferredGpuCommandService服务又会通过App的UI线程将请求的GPU操作提交给App的Render Thread执行。这一点可以参考前面一文的描述。我们在接下来的一篇文章也会对Chromium的Browser端和Render端执行GPU操作的过程进行详细的分析。  
+       接下来我们就结合源码，分析AndroidWebView启动Chromium的Browser端和Render端的过程。对于GPU端，我们仅仅分析与它相关的DeferredGpuCommandService服务的启动过程。在接下来一篇文章分析Android WebView执行GPU命令的过程时，我们再对GPU端进行更详细的分析。  
+       我们首先分析AndroidWebView启动Chromium的Browser端的过程。前面提到，WebView会在内部创建一个类型为WebViewChromium的Provider。有了这个Provider之后，WebView就可以调用它的成员函数init启动Chromium的Browser端，如下所示：  
+[java] view plain copy
+class WebViewChromium implements WebViewProvider,  
+          WebViewProvider.ScrollDelegate, WebViewProvider.ViewDelegate {      ......     
+    public void init(final Map<String, Object> javaScriptInterfaces,              final boolean privateBrowsing) {          ......     
+        // We will defer real initialization until we know which thread to do it on, unless:          // - we are on the main thread already (common case),  
+        // - the app is targeting >= JB MR2, in which case checkThread enforces that all usage          //  comes from a single thread. (Note in JB MR2 this exception was in WebView.java).          if (mAppTargetSdkVersion >= Build.VERSION_CODES.JELLY_BEAN_MR2) {              mFactory.startYourEngines(false);  
+            checkThread();  
+        } else if (!mFactory.hasStarted()) {  
+            if (Looper.myLooper() == Looper.getMainLooper()) {                  mFactory.startYourEngines(true);              }          }     
+        ......     
+        mRunQueue.addTask(new Runnable() {                  @Override  
+                public void run() {                      initForReal();                      ......                  }          });      }     
+    ......  }  
+      这个函数定义在文件frameworks/webview/chromium/java/com/android/webview/chromium/WebViewChromium.java中。 
+      WebViewChromium类的成员变量mFactory指向的是一个WebViewChromiumFactoryProvider对象。WebViewChromium类的成员函数init通过调用这个WebViewChromiumFactoryProvider对象的成员函数startYourEngines启动Chromium渲染引擎的Browser端。  
+       在Android 4.3之前，WebView只能在App的UI线程中创建。相应地，WebView也只能在App的UI线程中启动Chromium渲染引擎的Browser端。这时候WebViewChromium类的成员函数init会传递一个参数true给WebViewChromiumFactoryProvider类的成员函数startYourEngines，表示如果当前线程如果不是UI线程，那么就需要向UI线程发出一个通知，让UI线程执行启动Chromium渲染引擎的Browser端的操作。  
+       在Android 4.3及以后，WebView也允许在App的非UI线程中创建。这时候WebView允行在App的非UI线程中启动Chromium渲染引擎的Browser端。因此，WebViewChromium类的成员函数init就会传递一个参数false给WebViewChromiumFactoryProvider类的成员函数startYourEngines。  
+       一般情况下，WebView都是在App的UI线程中创建的。为了简单起见，我们只考虑这种情况。WebViewChromium类的成员函数init调用WebViewChromiumFactoryProvider类的成员函数startYourEngines启动了Chromium渲染引擎的Browser端之后，接下来还会向App的UI线程的消息队列发送一个Runnable。当该Runnable被执行的时候，它就会调用WebViewChromium类的成员函数initForReal创建图1所示的AwContents对象。有了这
+个AwContents对象之后，后面就可以通过它来加载指定的URL了。  
+       接下来，我们首先分析WebViewChromiumFactoryProvider类的成员函数startYourEngines启动Chromium渲染引擎的Browser端的过程，然后再分析WebViewChromium类的成员函数initForReal为WebView创建AwContents对象的过程。  
+       WebViewChromiumFactoryProvider类的成员函数startYourEngines的实现如下所示：  
+[java] view plain copy
+public class WebViewChromiumFactoryProvider implements WebViewFactoryProvider {      ......     
+    void startYourEngines(boolean onMainThread) {          synchronized (mLock) {  
+            ensureChromiumStartedLocked(onMainThread);     
+        }      }     
+    ......  }  
+       这个函数定义在文件frameworks/webview/chromium/Java/com/android/webview/chromium/WebViewChromiumFactoryProvider.java中。  
+       WebViewChromiumFactoryProvider类的成员函数startYourEngines调用另外一个成员函数ensureChromiumStartedLocked检查Chromium渲染引擎的Browser端是否已经启动。如果还没有启动，那么就会进行启动，如下所示：  
+[java] view plain copy
+public class WebViewChromiumFactoryProvider implements WebViewFactoryProvider {      ......     
+    private void ensureChromiumStartedLocked(boolean onMainThread) {          ......     
+        if (mStarted) { // Early-out for the common case.              return;          }     
+        Looper looper = !onMainThread ? Looper.myLooper() : Looper.getMainLooper();          ......  
+        ThreadUtils.setUiThread(looper);     
+        if (ThreadUtils.runningOnUiThread()) {              startChromiumLocked();              return;          }     
+        // We must post to the UI thread to cover the case that the user has invoked Chromium          // startup by using the (thread-safe) CookieManager rather than creating a WebView.          ThreadUtils.postOnUiThread(new Runnable() {              @Override  
+            public void run() {  
+                synchronized (mLock) {  
+                    startChromiumLocked();                  }              }          });  
+        while (!mStarted) {              try {  
+                // Important: wait() releases |mLock| the UI thread can take it :-)                  mLock.wait();  
+            } catch (InterruptedException e) {  
+                // Keep trying... eventually the UI thread will process the task we sent it.              }          }      }     
+    ......  }  
+       这个函数定义在文件frameworks/webview/chromium/java/com/android/webview/chromium/WebViewChromiumFactoryProvider.java中。 
+       如果Chromium渲染引擎的Browser端已经启动，那么WebViewChromiumFactoryProvider类的成员变量mStarted的值就会等于true。在这种情况下，WebViewChromiumFactoryProvider类的成员函数ensureChromiumStartedLocked什么也不用做就可以返回。  
+       另一方面，如果Chromium渲染引擎的Browser端还没有启动，那么WebViewChromiumFactoryProvider类的成员函数ensureChromiumStartedLocked首先会根据参数onMainThread确定Chromium渲染引擎的Browser端要在哪个线程中运行。  
+       当参数onMainThread的值等于true的时候，就表示Chromium渲染引擎的Browser端要在App的UI线程中运行。这时候如果当前线程不是App的UI线程，那么WebViewChromiumFactoryProvider类的成员函数ensureChromiumStartedLocked就会向App的UI线程的消息队列发送一个Runnable。当该Runnable被执行的时候，才会启动Chromium渲染引擎的Browser端。在这种情况下，当前线程也会等待App的UI线程启动完成Chromium
+渲染引擎的Browser端。  
+       当参数onMainThread的值等于true的时候，如果当前线程刚好也是App的UI线程，那么WebViewChromiumFactoryProvider类的成员函数ensureChromiumStartedLocked就可以马上启动Chromium渲染引擎的Browser端。  
+       当参数onMainThread的值等于false的时候，不管当前线程是否App的UI线程，都表示Chromium渲染引擎的Browser端要在它里面运行。因此，这时候WebViewChromiumFactoryProvider类的成员函数ensureChromiumStartedLocked都会马上启动Chromium渲染引擎的Browser端。  
+       无论是上述的哪一种情况，用来运行Chromium渲染引擎的Browser端的线程都会通过调用ThreadUtils类的静态成员函数setUiThread记录起来。以后WebView都需要在该线程中访问Chromium渲染引擎。  
+       WebViewChromiumFactoryProvider类的成员函数ensureChromiumStartedLocked是通过调用另外一个成员函数startChromiumLocked启动Chromium渲染引擎的Browser端的，如下所示：  
+[java] view plain copy
+public class WebViewChromiumFactoryProvider implements WebViewFactoryProvider {      ......     
+    private void startChromiumLocked() {          ......     
+        AwBrowserProcess.start(ActivityThread.currentApplication());     
+        ......      }     
+    ......  }  
+       这个函数定义在文件frameworks/webview/chromium/java/com/android/webview/chromium/WebViewChromiumFactoryProvider.java中。 
+       WebViewChromiumFactoryProvider类的成员函数startChromiumLocked通过调用AwBrowserProcess类的静态成员函数start启动Chromium渲染引擎的Browser端的，如下所示：  
+[java] view plain copy
+public abstract class AwBrowserProcess {      ......     
+    public static void start(final Context context) {  
+        // We must post to the UI thread to cover the case that the user          // has invoked Chromium startup by using the (thread-safe)          // CookieManager rather than creating a WebView.  
+        ThreadUtils.runOnUiThreadBlocking(new Runnable() {              @Override  
+            public void run() {                  try {  
+                    BrowserStartupController.get(context).startBrowserProcessesSync(                                  
+BrowserStartupController.MAX_RENDERERS_SINGLE_PROCESS);                      ......  
+                } catch (ProcessInitException e) {                      ......                  }              }          });      }     
+    ......  }  
+       这个函数定义在文件external/chromium_org/android_webview/java/src/org/chromium/android_webview/AwBrowserProcess.java中。 
+       前面提到，用来运行Chromium渲染引擎的Browser端的线程会通过ThreadUtils类的静态成员函数setUiThread记录起来。AwBrowserProcess类的静态成员函数start为了确保Chromium渲染引擎的Browser端在该线程中启动，会通过调用ThreadUtils类的静态成员函数runOnUiThreadBlocking检查当前线程是否就是该线程。如果是的话，那么就会直接启动。否则的话，会向该线程的消息队列发送一个Runnable。当该Runnable被执行的时候，再启动Chromium渲染引擎的Browser端。  
+       AwBrowserProcess类的静态成员函数start是通过调用当前App进程中的一个BrowserStartupController单例对象的成员函数startBrowserProcessesSync来启动Chromium渲染引擎的Browser端的。这个BrowserStartupController单例对象可以通过调用BrowserStartupController类的静态成员函数get获得。  
+       AwBrowserProcess类的静态成员函数start在启动Chromium渲染引擎的Browser端的时候，会指定一个BrowserStartupController.MAX_RENDERERS_SINGLE_PROCESS参数。这个参数的值等于0，表示要启动一个单进程架构的Chromium渲染引擎。  
+       接下来，我们就继续分析Chromium渲染引擎的Browser端的启动过程，也就是BrowserStartupController类的成员函数startBrowserProcessesSync的实现，如下所示：  
+[java] view plain copy
+public class BrowserStartupController {      ......     
+    public void startBrowserProcessesSync(int maxRenderers) throws ProcessInitException {          // If already started skip to checking the result          if (!mStartupDone) {  
+            if (!mHasStartedInitializingBrowserProcess) {  
+                prepareToStartBrowserProcess(maxRenderers);              }     
+            ......  
+            if (contentStart() > 0) {  
+                // Failed. The callbacks may not have run, so run them.                  enqueueCallbackExecution(STARTUP_FAILURE,NOT_ALREADY_STARTED);              }          }     
+        ......      }     
+    ......  }  
+       这个函数定义在文件external/chromium_org/content/public/android/java/src/org/chromium/content/browser/BrowserStartupController.java中。 
+       当BrowserStartupController类的成员变量mStartupDone的值等于true的时候，就表示Chromium渲染引擎的Browser端已经启动了。这时候BrowserStartupController类的成员函数startBrowserProcessesSync就什么也不做就直接返回。  
+       另一方面，如果Chromium渲染引擎的Browser端还没有启动。这时候BrowserStartupController类的成员函数startBrowserProcessesSync就会调用另外一个成员函数contentStart进行启动。  
+       在启动Chromium渲染引擎的Browser端之前，BrowserStartupController类的成员函数startBrowserProcessesSync也会检查成员变量mHasStartedInitializingBrowserProcess的值。当这个值等于false的时候，就会先调用成员函数prepareToStartBrowserProcess设置Chromium渲染引擎的启动参数。其中，最重要的就是将Chromium渲染引擎设置为单进程架构。  
+       接下来，我们先分析将Chromium渲染引擎设置为单进程架构的过程，也就是BrowserStartupController类的成员函数prepareToStartBrowserProcess的实现，然后再分析启动Chromium渲染引擎的Browser端的过程，也就是BrowserStartupController类的成员函数contentStart的实现。 
+ 
+       BrowserStartupController类的成员函数prepareToStartBrowserProcess的实现如下所示：  
+[java] view plain copy
+public class BrowserStartupController {      ......     
+    void prepareToStartBrowserProcess(int maxRendererProcesses) throws ProcessInitException{  
+        ......     
+        nativeSetCommandLineFlags(maxRendererProcesses,                  nativeIsPluginEnabled() ? getPlugins() : null);          ......      }     
+    ......  }  
+       这个函数定义在文件external/chromium_org/content/public/android/java/src/org/chromium/content/browser/BrowserStartupController.java中。 
+       BrowserStartupController类的成员函数prepareToStartBrowserProcess调用另外一个成员函数nativeSetCommandLineFlags将Chromium渲染引擎设置为单进程架构。  
+       BrowserStartupController类的成员函数nativeSetCommandLineFlags是一个JNI方法，它由C++层的函数Java_com_android_org_chromium_content_browser_BrowserStartupController_nativeSetCommandLineFlags实现，如下所示：  
+[cpp] view plain copy
+__attribute__((visibility("default")))  void      
+Java_com_android_org_chromium_content_browser_BrowserStartupController_nativeSetCommandLineFlags(JNIEnv*      env, jclass jcaller,  
+    jint maxRenderProcesses,      jstring pluginDescriptor) {  
+  return SetCommandLineFlags(env, jcaller, maxRenderProcesses,        pluginDescriptor);  }  
+       这个函数定义在文件out/target/product/generic/obj/GYP/shared_intermediates/content/jni/BrowserStartupController_jn
+i.h中。        函数Java_com_android_org_chromium_content_browser_BrowserStartupController_nativeSetCommandLineFlags调用另外一个函数SetCommandLineFlags将Chromium渲染引擎设置为单进程架构，如下所示：  
+[cpp] view plain copy
+static void SetCommandLineFlags(JNIEnv* env,                                  jclass clazz,  
+                                jint max_render_process_count,                                  jstring plugin_descriptor) {    std::string plugin_str =  
+      (plugin_descriptor == NULL             ? std::string()  
+           : base::android::ConvertJavaStringToUTF8(env, plugin_descriptor));    SetContentCommandLineFlags(max_render_process_count, plugin_str);  }  
+       这个函数定义在文件external/chromium_org/content/browser/android/browser_startup_controller.cc中。 
+       函数SetCommandLineFlags又会调用另外一个函数SetContentCommandLineFlags将Chromium渲染引擎设置为单进程架构，如下所示：  
+[cpp] view plain copy
+void SetContentCommandLineFlags(int max_render_process_count,  
+                                const std::string& plugin_descriptor) {    ......     
+  CommandLine* parsed_command_line = CommandLine::ForCurrentProcess();       
+  int command_line_renderer_limit = -1;  
+  if (parsed_command_line->HasSwitch(switches::kRendererProcessLimit)) {      std::string limit = parsed_command_line->GetSwitchValueASCII(          switches::kRendererProcessLimit);      int value;  
+    if (base::StringToInt(limit, &value)) {        command_line_renderer_limit = value;        if (value <= 0)  
+        max_render_process_count = 0;      }    }     
+  if (command_line_renderer_limit > 0) {  
+    int limit = std::min(command_line_renderer_limit,  
+                         static_cast<int>(kMaxRendererProcessCount));  
+    RenderProcessHost::SetMaxRendererProcessCount(limit);    } else if (max_render_process_count <= 0) {  
+    // Need to ensure the command line flag is consistent as a lot of chrome      // internal code checks this directly, but it wouldn't normally get set when      // we are implementing an embedded WebView.  
+    parsed_command_line->AppendSwitch(switches::kSingleProcess);    } else {  
+    int default_maximum = RenderProcessHost::GetMaxRendererProcessCount();      DCHECK(default_maximum <= static_cast<int>(kMaxRendererProcessCount));      if (max_render_process_count < default_maximum)  
+      RenderProcessHost::SetMaxRendererProcessCount(max_render_process_count);    }     
+  ......  }  
+       这个函数定义在文件external/chromium_org/content/browser/android/content_startup_flags.cc中。 
+       函数SetContentCommandLineFlags首先检查AndroidWebView是否设置了switches::kRendererProcessLimit命令行参数。如果设置了，那么这个参数的值就会被解析出来，保存在本地变量command_line_renderer_limit中，用来限定Chromium渲染引擎最多可创建的Render进程的个数的。  
+       Chromium渲染引擎最多可创建的Render进程的个数还受到参数max_render_process_count的限制：  
+       1.当本地变量command_line_renderer_limit的值大于0的时候，那么取max_render_process_count和command_line_renderer_limit之间的较小者作为最多可创建的Render进程的个数。  
+       2.当本地变量command_line_renderer_limit的值小于等于0，并且参数max_render_process_count的值也小于等于0的时候，那么Chromium渲染引擎不允许创建Render进程，也就是它使用的是单进程架构。  
+       3.当本地变量command_line_renderer_limit的值小于等于0，并且参数max_render_process_count的值大于0的时候，会调用RenderProcessHost类的静态成员函数GetMaxRendererProcessCount根据设备内存的大小计算出可以创建的Render进程的最大数default_maximum。如果参数max_render_process_count的值小于这个最大值，那么就将它设置为可以创建的Render进程的个数。  
+       在我们这个情景中，AndroidWebView没有设置switches::kRendererProcessLimit命令行参数，并且参数max_render_process_count的值等于0，因此函数SetContentCommandLineFlags会将Chromium渲染引擎设置为单进程架构。这是通过在Android WebView的命令行参数中设置一个switches::kSingleProcess选项实现的。  
+       这一步执行完成后，回到前面分析的BrowserStartupController类的成员函数startBrowserProcessesSync中，接下来它会调用另外一个成员函数contentStart启动Chromium渲染引擎的Browser端，如下所示：  
+[java] view plain copy
+public class BrowserStartupController {      ......     
+    int contentStart() {  
+        return ContentMain.start();      }     
+    ......  }  
+       这个函数定义在文件external/chromium_org/content/public/android/java/src/org/chromium/content/browser/BrowserStartupController.java中。 
+       BrowserStartupController类的成员函数contentStart调用ContentMain类的静态成员函数Start启动Chromium渲染引擎的Browser端，如下所示：  
+[java] view plain copy
+public class ContentMain {      ......     
+    public static int start() {          return nativeStart();      }     
+    ......  }  
+       这个函数定义在文件external/chromium_org/content/public/android/java/src/org/chromium/content/app/ContentMain.java中。 
+       ContentMain类的静态成员函数Start调用另外一个静态成员函数nativeStart启动Chromium渲染引擎的Browser端。  
+       ContentMain类的静态成员函数nativeStart是一个JNI方法，它由C++层的函数Java_com_android_org_chromium_content_app_ContentMain_nativeStart实现，如下所示：  
+[cpp] view plain copy
+__attribute__((visibility("default")))  
+jint Java_com_android_org_chromium_content_app_ContentMain_nativeStart(JNIEnv*      env, jclass jcaller) {    return Start(env, jcaller);  
+}  
+        这个函数定义在文件out/target/product/generic/obj/GYP/shared_intermediates/content/jni/ContentMain_jni.h中。         函数Java_com_android_org_chromium_content_app_ContentMain_nativeStart调用另外一个函数Start启动Chromium渲染引擎的Browser端，如下所示：  
+[cpp] view plain copy
+LazyInstance<scoped_ptr<ContentMainRunner> > g_content_runner =      LAZY_INSTANCE_INITIALIZER;     
+LazyInstance<scoped_ptr<ContentMainDelegate> > g_content_main_delegate =      LAZY_INSTANCE_INITIALIZER;     ......     
+static jint Start(JNIEnv* env, jclass clazz) {    ......     
+  if (!g_content_runner.Get().get()) {  
+    ContentMainParams params(g_content_main_delegate.Get().get());      g_content_runner.Get().reset(ContentMainRunner::Create());      g_content_runner.Get()->Initialize(params);    }  
+  return g_content_runner.Get()->Run();  }  
+       这个函数定义在文件external/chromium_org/content/app/android/content_main.cc中。        函数Start判断全局变量g_content_runner是否已经指向了一个ContentMainRunner对象。如果还没有指向，那么就说明Chromium渲染引擎的Browser端还没有启动。在这种情况下，函数Start就会调用ContentMainRunner类的静态成员函数Create创建一个ContentMainRunner对象，并且保存在全局变量g_content_runner中。  
+       ContentMainRunner类的静态成员函数Create的实现如下所示：  
+[cpp] view plain copy
+ContentMainRunner* ContentMainRunner::Create() {    return new ContentMainRunnerImpl();  }  
+       这个函数定义在文件external/chromium_org/content/app/content_main_runner.cc中。        从这里可以看到，ContentMainRunner类的静态成员函数Create实际创建的是一个ContentMainRunnerImpl对象。这个ContentMainRunnerImpl返回给函数Start之后，它的成员函数Initialize就会被调用，用来对它进行初始化。  
+       从前面一文可以知道，全局变量g_content_main_delegate指向的是一个AwMainDelegate对象。这个AwMainDelegate对象将会封装在一个ContentMainParams对象
+中，并且传递给前面创建的ContentMainRunnerImpl对象的成员函数Initialize，以便后者用来执行初始化工作。  
+        ContentMainRunnerImpl类的成员函数Initialize的实现如下所示：  
+[cpp] view plain copy
+class ContentMainRunnerImpl : public ContentMainRunner {   public:    ......     
+  virtual int Initialize(const ContentMainParams& params) OVERRIDE {      ......     
+    delegate_ = params.delegate;      ......     
+    int exit_code;  
+    if (delegate_ && delegate_->BasicStartupComplete(&exit_code))        return exit_code;      ......         
+    const CommandLine& command_line = *CommandLine::ForCurrentProcess();      std::string process_type =  
+        command_line.GetSwitchValueASCII(switches::kProcessType);     
+    ......     
+    ContentClientInitializer::Set(process_type, delegate_);     
+    ......  }  
+       这个函数定义在文件external/chromium_org/content/app/content_main_runner.cc中。        参数params描述的ContentMainParams对象的成员变量delegate指向的是就是前面描述的全局变量g_content_main_delegate指向的AwMainDelegate对象。ContentMainRunnerImpl类的成员函数Initialize会将这个AwMainDelegate对象保存在成员变量delegate_中，并且会调用这个AwMainDelegate对象的成员函数BasicStartupComplete执行一些基本的初始化工作，如下所示：  
+[cpp] view plain copy
+bool AwMainDelegate::BasicStartupComplete(int* exit_code) {    content::SetContentClient(&content_client_);    ......  }  
+       这个函数定义在文件
+external/chromium_org/android_webview/lib/main/aw_main_delegate.cc中。 
+       AwMainDelegate类的成员变量content_client_描述的是一个AwContentClient对象。这个AwContentClient对象将会设置给Chromium的Content层。这个通过调用函数SetContentClient实现的，如下所示：  
+[cpp] view plain copy
+static ContentClient* g_client;     ......     
+void SetContentClient(ContentClient* client) {    g_client = client;    ......  }     
+ContentClient* GetContentClient() {    return g_client;  }  
+       这个函数定义在文件external/chromium_org/content/public/common/content_client.cc中。 
+       函数SetContentClient将参数client指向的一个AwContentClient对象保存在全局变量g_client中。这个AwContentClient对象以后可以通过调用函数GetContentClient获得。  
+       这一步执行完成后，回到前面分析的ContentMainRunnerImpl类的成员函数Initialize的中，它接下来检查Android WebView是否设置了switches::kProcessType命令行参数。如果设置了，那么该参数值process_type描述的就是当前启动的进程的类型（Browser端、Render端或者GPU端）。如果没有设置，那么参数值process_type就会等于一个空字符串，表示当前要启动的是一个Browser端。  
+       在我们这个情景中，Android WebView没有设置switches::kProcessType，因此得到的参数值process_type就等于一个空字符串。这个空字符串，连同ContentMainRunnerImpl类的成员变量delegate_指向的AwMainDelegate对象，会进一步传递给ContentClientInitializer类的静态成员函数Set执行初始化操作，如下所示：  
+[cpp] view plain copy
+class ContentClientInitializer {   public:  
+  static void Set(const std::string& process_type,  
+                  ContentMainDelegate* delegate) {      ContentClient* content_client = GetContentClient();      if (process_type.empty()) {        if (delegate)  
+        content_client->browser_ = delegate->CreateContentBrowserClient();       ......  
+    }     
+    ......    }        ......  };  
+      这个函数定义在文件external/chromium_org/content/app/content_main_runner.cc中。  
+      ContentClientInitializer类的静态成员函数Set首先是调用前面提到的函数GetContentClient获得一个AwContentClient对象，接下来判断参数process_type的值是否等于一个空字符串。如果等于的话，那么就会调用参数delegate指向的一个AwMainDelegate对象的成员函数CreateContentBrowserClient创建一个ContentBrowserClient对象，并且保存在前面获得的AwContentClient对象的成员变量browser_中。  
+      从前面的分析可以知道，参数process_type的值等于一个空字符串，因此接下来ContentClientInitializer类的静态成员函数Set就会调用参数delegate指向的AwMainDelegate对象的成员函数CreateContentBrowserClient创建一个ContentBrowserClient对象，如下所示：  
+[cpp] view plain copy
+content::ContentBrowserClient*  
+    AwMainDelegate::CreateContentBrowserClient() {  
+  content_browser_client_.reset(new AwContentBrowserClient(this));    return content_browser_client_.get();  }  
+       这个函数定义在文件external/chromium_org/android_webview/lib/main/aw_main_delegate.cc中。 
+       AwMainDelegate类的成员函数CreateContentBrowserClient实际创建的是一个AwContentBrowserClient对象。这个AwContentBrowserClient对象是从ContentBrowserClient类继承下来的。  
+       这意味着前面设置到Conent层的一个AwContentClient对象的成员变量browser_指向的是一个AwContentBrowserClient对象。这个AwContentBrowserClient对象在接下来启动Chromium渲染引擎的Browser端过程中会使用到。  
+       这一步执行完成后，回到前面分析的函数Start中。这时候它就创建了一个ContentMainRunner对象，并且对这个ContentMainRunner对象进行初始化。接下来，函数Start继续调用这个ContentMainRunner对象的成员函数Run，以便启动Chromium渲染引擎的Browser端，如下所示：  
+[cpp] view plain copy
+class ContentMainRunnerImpl : public ContentMainRunner {   public:    ......  
+   
+  virtual int Run() OVERRIDE {      ......  
+    const CommandLine& command_line = *CommandLine::ForCurrentProcess();      std::string process_type =  
+          command_line.GetSwitchValueASCII(switches::kProcessType);     
+    MainFunctionParams main_params(command_line);      ......     
+#if !defined(OS_IOS)  
+    return RunNamedProcessTypeMain(process_type, main_params, delegate_);  #else  
+    return 1;  #endif    }     
+  ......  };  
+       这个函数定义在文件external/chromium_org/content/app/content_main_runner.cc中。        ContentMainRunner类的成员函数Run首先获得AndroidWebView设置的命令行参数switches::kProcessType的值。前面提到，AndroidWebView没有设置命令行参数switches::kProcessType，因此这里获得的值为一个空字符串，也就是本地变量process_type的值等于一个空字符串。  
+       接下来，ContentMainRunner类的成员函数Run还会将AndroidWebView设置的命令行参数封装在一个MainFunctionParams对象中。这个MainFunctionParams对象，连同前面设置的本地变量process_type，以及ContentMainRunner类的成员变量delegate_指向的一个AwMainDelegate对象，会传递给另外一个函数RunNamedProcessTypeMain。这个函数将会负责启动Chromium渲染引擎的Browser端，如下所示：  
+[cpp] view plain copy
+   const MainFunctionParams& main_function_params,      ContentMainDelegate* delegate) {  
+  static const MainFunction kMainFunctions[] = {  #if !defined(CHROME_MULTIPLE_DLL_CHILD)  
+    { "",                           BrowserMain },  #endif      ......  
+    { switches::kRendererProcess,   RendererMain },      { switches::kGpuProcess,        GpuMain },       ......    };     
+  RegisterMainThreadFactories();     
+  for (size_t i = 0; i < arraysize(kMainFunctions); ++i) {      if (process_type == kMainFunctions[i].name) {        if (delegate) {  
+        int exit_code = delegate->RunProcess(process_type,              main_function_params);  #if defined(OS_ANDROID)  
+        // In Android's browser process, the negative exit code doesn't mean the          // default behavior should be used as the UI message loop is managed by          // the Java and the browser process's default behavior is always          // overridden.  
+        if (process_type.empty())            return exit_code;  #endif  
+        if (exit_code >= 0)            return exit_code;        }  
+      return kMainFunctions[i].function(main_function_params);      }    }     
+  ......  }  
+       这个函数定义在文件external/chromium_org/content/app/content_main_runner.cc中。  
+       函数RunNamedProcessTypeMain定义了一个MainFunction数组。这个MainFunction数组用来指定不同类型的进程的入口函数。其中，Browser进程、Render进程和GPU进程对应的入口函数分别为BrowserMain、RendererMain和GpuMain。当然，只有在参数delegate的值等于NULL的情况下，这个MainFunction数组才会生效。否则的话，所有进程的入口函数都为该参数指向的ContentMainDelegate对象的成员函数RunProcess。对于非Browser进程，如果参数delegate指向的ContentMainDelegate对象的成员函数RunProcess的返回值小于0，那么上述MainFunction数组也会同样生效。  
+       从前面的调用过程可以知道，参数process_type的值是一个空字符串，表示函数RunNamedProcessTypeMain需要启动的是一个Chromium渲染引擎的Browser进程（端）。这时候由于另外一个参数delegate指向了一个AwMainDelegate对象，因此，函数RunNamedProcessTypeMain将调用这个AwMainDelegate对象的成员函数RunProcess启动Chromium渲染引擎的Browser端。  
+       函数RunNamedProcessTypeMain在调用参数delegate指向的AwMainDelegate对象的成员函数RunProcess启动Chromium渲染引擎的Browser端之前，还会调用函数RegisterMainThreadFactories注册一些线程创建工厂函数，如下所示：  
+[cpp] view plain copy
+static void RegisterMainThreadFactories() {  
+#if !defined(CHROME_MULTIPLE_DLL_BROWSER)    ......  
+  RenderProcessHostImpl::RegisterRendererMainThreadFactory(        CreateInProcessRendererThread);    ......  #else    ......  #endif  }  
+      这个函数定义在文件external/chromium_org/content/app/content_main_runner.cc中。       其中的一个线程创建工厂函数是Render线程创建工厂函数，它被指定为函数CreateInProcessRendererThread，并且会通过调用RenderProcessHostImpl类的静态成员函数RegisterRendererMainThreadFactory记录起来，如下所示：  
+[cpp] view plain copy
+RendererMainThreadFactoryFunction g_renderer_main_thread_factory = NULL;     ......     
+void RenderProcessHostImpl::RegisterRendererMainThreadFactory(      RendererMainThreadFactoryFunction create) {    g_renderer_main_thread_factory = create;  }  
+       这个函数定义在文件external/chromium_org/content/browser/renderer_host/render_process_host_impl.cc中。 
+       参数create描述的函数CreateInProcessRendererThread将会保存在全局变量g_renderer_main_thread_factory中。以后Chromium渲染引擎的Browser端将会通过这个函数创建In-Process Renderer Thread，以便用来加载和渲染指定的URL。  
+       这一步执行完成后，回到前面分析的函数RunNamedProcessTypeMain，接下来它就会调用参数delegate指向的AwMainDelegate对象的成员函数RunProcess启动Chromium渲染引擎的Browser端，如下所示：  
+[cpp] view plain copy
+int AwMainDelegate::RunProcess(      const std::string& process_type,  
+    const content::MainFunctionParams& main_function_params) {    if (process_type.empty()) {      ......     
+    browser_runner_.reset(content::BrowserMainRunner::Create());  
+    int exit_code = browser_runner_->Initialize(main_function_params);  
+    ......     
+    return 0;    }     
+  return -1;  }  
+      这个函数定义在文件external/chromium_org/android_webview/lib/main/aw_main_delegate.cc中。 
+      从前面的调用过程可以知道，参数process_type的值等于一个空字符串。在这种情况下，AwMainDelegate类的成员函数RunProcess会调用BrowserMainRunner类的静态成员函数Create创建一个BrowserMainRunner对象，并且会保存在成员变量browser_runner_中，如下所示：  
+[cpp] view plain copy
+BrowserMainRunner* BrowserMainRunner::Create() {    return new BrowserMainRunnerImpl();  }  
+      这个函数定义在文件external/chromium_org/content/browser/browser_main_runner.cc中。 
+      从这里可以看到，BrowserMainRunner类的静态成员函数Create创建的实际上是一个BrowserMainRunnerImpl对象。这意味着AwMainDelegate类的成员变量browser_runner_指向的是一个BrowserMainRunnerImpl对象。这个BrowserMainRunnerImpl对象的成员函数Initialize接下来会被调用。在调用的过程中，就会将Chromium渲染引擎的Browser端启动起来，如下所示：  
+[cpp] view plain copy
+class BrowserMainRunnerImpl : public BrowserMainRunner {   public:    ......     
+  virtual int Initialize(const MainFunctionParams& parameters) OVERRIDE {      ......     
+    if (!initialization_started_) {        initialization_started_ = true;       ......     
+      main_loop_.reset(new BrowserMainLoop(parameters));     
+      main_loop_->Init();     
+      main_loop_->EarlyInitialization();     
+     ......     
+      main_loop_->MainMessageLoopStart();     
+     ......      }     
+    main_loop_->CreateStartupTasks();  
+    int result_code = main_loop_->GetResultCode();      if (result_code > 0)        return result_code;     
+    // Return -1 to indicate no early termination.      return -1;    }     
+  ......  }  
+       这个函数定义在文件external/chromium_org/content/browser/browser_main_runner.cc中。 
+       BrowserMainRunnerImpl类的成员函数Initialize首先检查成员变量initialization_started_的值是否等于true。如果等于true，那么就说明Chromium渲染引擎的Browser端已经启动过。在这种情况下，BrowserMainRunnerImpl类的成员函数Initialize只会创建一些Startup Task。  
+       如果Chromium渲染引擎的Browser端还没有启动过，那么BrowserMainRunnerImpl类的成员函数Initialize首先就会创建一个BrowserMainLoop对象，并且保存在成员变量main_loop_中。接下来，BrowserMainRunnerImpl类的成员函数Initialize会调用上述BrowserMainLoop对象的成员函数Init和EarlyInitialization对其进行初始化。初始化完成后，它的成员函数MainMessageLoopStart又会被调用。调用完成后，Chromium渲染引擎的Browser端就启动完成了。启动完成后，上述BrowserMainLoop对象的成员函数CreateStartupTasks也会被调用，用来创建一些Startup Task。  
+       接下来，我们就分别分析BrowserMainLoop类的成员函数Init、EarlyInitialization、MainMessageLoopStart和CreateStartupTasks的实现，以便了解Chromium渲染引擎的Browser端的启动过程。  
+       BrowserMainLoop类的成员函数Init用来创建一个BrowserMainParts对象，它的实现如下所示：  
+[cpp] view plain copy
+void BrowserMainLoop::Init() {    ......  
+  parts_.reset(  
+      GetContentClient()->browser()->CreateBrowserMainParts(parameters_));  }  
+       这个函数定义在文件external/chromium_org/content/browser/browser_main_loop.cc中。 
+       BrowserMainLoop类的成员函数Init首先调用前面提到的函数GetContentClient获得一个AwContentClient对象，接下来又会调用这个AwContentClient对象的成员函数browser获得它的成员变量browser_指向的一个AwContentBrowserClient对象。获得了这个AwContentBrowserClient对象之后，就可以调用它的成员函数CreateBrowserMainParts创建一个BrowserMainParts对象，并且保存在BrowserMainLoop类的成员变量parts_中，如下所示：  
+[cpp] view plain copy
+content::BrowserMainParts* AwContentBrowserClient::CreateBrowserMainParts(      const content::MainFunctionParams& parameters) {    return new AwBrowserMainParts(browser_context_.get());  }  
+       这个函数定义在文件external/chromium_org/android_webview/browser/aw_content_browser_client.cc中。 
+       从这里可以看出，AwContentBrowserClient类的成员函数CreateBrowserMainParts创建的实际上是一个AwBrowserMainParts对象。这个AwBrowserMainParts对象接下来会用来创建一个Native层的UIMessageLoop。这个UIMessageLoop接下来又会用来创建一个Browser Thread，用来表示Chromium渲染引擎的Browser端。  
+       这一步执行完成后，回到前面分析的BrowserMainRunnerImpl类的成员函数Initialize中，接下来BrowserMainLoop类的成员函数EarlyInitialization会被调用，用来创建一个Native层的UI Message Loop，如下所示：  
+[cpp] view plain copy
+void BrowserMainLoop::EarlyInitialization() {    ......     
+  if (parts_)  
+    parts_->PreEarlyInitialization();         ......  }  
+      这个函数定义在文件external/chromium_org/content/browser/browser_main_loop.cc中。       从前面的分析可以知道，BrowserMainLoop类的成员变量parts_指向的是一个AwBrowserMainParts对象。BrowserMainLoop类的成员函数EarlyInitialization会调用这个AwBrowserMainParts对象的成员函数PreEarlyInitialization创建一个UI Message Loop，如下所示：  
+[cpp] view plain copy
+void AwBrowserMainParts::PreEarlyInitialization() {  
+  ......  
+  main_message_loop_.reset(new base::MessageLoopForUI);    base::MessageLoopForUI::current()->Start();  }  
+       这个函数定义在文件external/chromium_org/android_webview/browser/aw_browser_main_parts.cc中。 
+       AwBrowserMainParts类的成员函数PreEarlyInitialization创建了一个MessageLoopForUI对象。这个MessageLoopForUI对象描述的就是一个Native层的UIMessage Loop。从前面一文可以知道，Native层的UI Message Loop并没有自己的线程，而是寄生在App的UI线程中运行（当前线程就是App的UI线程）。App的UI线程在Java层也有一个Message Loop，并且是由这个Java层的Message Loop驱动运行的。  
+       当我们往Native层的UI Message Loop发送一个消息的时候，Native层的UI MessageLoop会向App的UI线程在Java层的MessageLoop发送一个消息。当该消息被Java层的Message Loop调度执行的时候，之前发送在Native层的UI Message Loop中的消息就会得到执行。Chromium渲染引擎的Browser端，就是以这种方式运行在App的UI线程中的。  
+       AwBrowserMainParts类的成员函数PreEarlyInitialization在当前线程中创建了一个MessageLoopForUI对象之后，以后在当前线程中调用MessageLoopForUI类的静态成员函数current时，就会获得该MessageLoopForUI对象。有了这个MessageLoopForUI对象之后，AwBrowserMainParts类的成员函数PreEarlyInitialization就会调用它的成员函数Start，用来启动它描述的Native UI Message Loop。  
+       这一步执行完成后，回到前面分析的BrowserMainRunnerImpl类的成员函数Initialize中，接下来BrowserMainLoop类的成员函数MainMessageLoopStart会被调用，用来创建一个Browser Thread，如下所示：  
+[cpp] view plain copy
+void BrowserMainLoop::MainMessageLoopStart() {    ......     
+  InitializeMainThread();     
+  .....  }  
+       这个函数定义在文件external/chromium_org/content/browser/browser_main_loop.cc中。 
+       BrowserMainLoop类的成员函数MainMessageLoopStart调用另外一个成员函数InitializeMainThread创建一个Browser Thread，如下所示：  
+[cpp] view plain copy
+void BrowserMainLoop::InitializeMainThread() {    ......  
+  main_thread_.reset(  
+      new BrowserThreadImpl(BrowserThread::UI, base::MessageLoop::current()));  }  
+       这个函数定义在文件external/chromium_org/content/browser/browser_main_loop.cc中。 
+       BrowserMainLoop类的成员函数InitializeMainThread使用前面创建的NativeUIMessage Loop创建了一个Browser Thread。这个Browser Thread描述的就是Chromium渲染引擎的Browser端。由于这个Browser Thread是使用前面创建的Native UI Message Loop创建的，因此，它实际上描述的是App的UI线程。以后Chromium请求这个BrowserThread执行操作时，这个操作就会在App的UI线程中执行。  
+       这一步执行完成之后，Chromium渲染引擎的Browser端就启动完成了。再回到前面分析的BrowserMainRunnerImpl类的成员函数Initialize中，接下来BrowserMainLoop类的成员函数CreateStartupTasks会被调用，用来在Chromium渲染引擎的Browser端执行一些Startup Task，如下所示：  
+[cpp] view plain copy
+void BrowserMainLoop::CreateStartupTasks() {    ......     
+  if (!startup_task_runner_.get()) {      ......     
+    StartupTask pre_create_threads =  
+        base::Bind(&BrowserMainLoop::PreCreateThreads, base::Unretained(this));      startup_task_runner_->AddTask(pre_create_threads);     
+    ......    }     
+  ......  }  
+       这个函数定义在文件external/chromium_org/content/browser/browser_main_loop.cc中。 
+       其中的一个Startup Task，是在Chromium渲染引擎的Browser端创建其它线程（IO线程、数据库线程、文件线程等）之前执行的，对应的函数为BrowserMainLoop类的成员函数PreCreateThreads。  
+       BrowserMainLoop类的成员函数PreCreateThread会检查Android WebView的命令行参数是否设置了一个switches::kSingleProcess选项。如果设置了，那么就会将Chromium渲染引擎设置为单进程架构，如下所示：  
+[cpp] view plain copy
+int BrowserMainLoop::PreCreateThreads() {    ......  
+   
+#if !defined(OS_IOS) && (!defined(GOOGLE_CHROME_BUILD) || defined(OS_ANDROID))    // Single-process is an unsupported and not fully tested mode, so    // don't enable it for official Chrome builds (except on Android).    if (parsed_command_line_.HasSwitch(switches::kSingleProcess))      RenderProcessHost::SetRunRendererInProcess(true);  #endif  
+  return result_code_;  }  
+       这个函数定义在文件external/chromium_org/content/browser/browser_main_loop.cc中。 
+       从前面的分析可以知道，函数SetContentCommandLineFlags会给AndroidWebView的命令行参数设置一个switches::kSingleProcess选项。在这种情况下，BrowserMainLoop类的成员函数PreCreateThread会调用RenderProcessHost类的静态成员函数SetRunRendererInProcess将Chromium渲染引擎设置为单进程架构，如下所示：  
+[cpp] view plain copy
+bool g_run_renderer_in_process_ = false;     ......     
+void RenderProcessHost::SetRunRendererInProcess(bool value) {    g_run_renderer_in_process_ = value;     
+  ......  }  
+       这个函数定义在文件external/chromium_org/content/browser/renderer_host/render_process_host_impl.cc中。 
+       从前面的调用过程可以知道，参数value的值等于true。这时候RenderProcessHost类的静态成员函数SetRunRendererInProcess就会将全局变量g_run_renderer_in_process_的值设置为true，表示Chromium渲染引擎使用单进程加载，也就是在需要创建Render进程来加载和渲染网页时，通过一个In-Process Renderer Thread模拟。  
+       这一步执行完成后，Chromium渲染引擎的Browser端就启动完毕。回到前面分析的WebViewChromium类的成员函数init中，接下来它会继续调用另外一个成员函数initForReal为WebView创建一个AwContents对象。这个AwContents对象以后可以用来加载指定的URL。  
+       接下来，我们就继续分析WebViewChromium类的成员函数initForReal创建AwContents对象的过程，如下所示：  
+[java] view plain copy
+class WebViewChromium implements WebViewProvider,  
+          WebViewProvider.ScrollDelegate, WebViewProvider.ViewDelegate {  
+    ......     
+    private void initForReal() {          ......  
+        mAwContents = new AwContents(mFactory.getBrowserContext(), mWebView, ctx,                  new InternalAccessAdapter(), new WebViewNativeGLDelegate(),                  mContentsClientAdapter, mWebSettings.getAwSettings());     
+        ......      }     
+    ......  }  
+       这个函数定义在文件frameworks/webview/chromium/java/com/android/webview/chromium/WebViewChromium.java中。 
+       WebViewChromium类的成员函数initForReal主要是创建了一个AwContents对象，并且保存在成员变量mAwContents中。这个AwContents对象的创建过程，也就是AwContents类的构造函数的实现，如下所示：  
+[java] view plain copy
+public class AwContents {      ......     
+    public AwContents(AwBrowserContext browserContext, ViewGroup containerView, Contextcontext,  
+            InternalAccessDelegateinternalAccessAdapter,NativeGLDelegatenativeGLDelegate,  
+            AwContentsClient contentsClient, AwSettings awSettings) {  
+        this(browserContext, containerView, context, internalAccessAdapter, nativeGLDelegate,                  contentsClient, awSettings, new DependencyFactory());      }     
+    ......  }  
+      这个函数定义在文件external/chromium_org/android_webview/java/src/org/chromium/android_webview/AwContents.java中。 
+      AwContents类的构造函数调用另外一个重载版本的构造函数创建一个AwContents对象，如下所示：  
+[java] view plain copy
+public class AwContents {      ......  
+   
+    public AwContents(AwBrowserContext browserContext, ViewGroup containerView, Contextcontext,  
+            InternalAccessDelegateinternalAccessAdapter,NativeGLDelegatenativeGLDelegate,  
+            AwContentsClient contentsClient, AwSettings settings,              DependencyFactory dependencyFactory) {          ......  
+        mNativeGLDelegate = nativeGLDelegate;          ......     
+        setNewAwContents(nativeInit(mBrowserContext));     
+        ......      }     
+    ......  }  
+       这个函数定义在文件external/chromium_org/android_webview/java/src/org/chromium/android_webview/AwContents.java中。 
+       参数nativeGLDelegate指向的是一个WebViewNativeGLDelegate对象。这个WebViewNativeGLDelegate对象会被保存在AwContents类的成员变量mNativeGLDelegate中。  
+       AwContents类的构造函数会调用另外一个成员函数nativeInit在Native层创建一个WebContents对象。WebContents类是Chromium的Content层向外提供的一个类，通过它可以描述一个网页。  
+       在Native层创建了一个WebContents对象之后，AwContents类的构造函数会将该WebContents对象传递给另外一个成员函数setNewAwContents，用来在Native层创建一个ContentViewCore对象。ContentViewCore类同样是Chromium的Content层向外提供的一个类，通过它可以加载一个指定的URL，也就是通过可以启动Chromium渲染引擎的Render端。  
+       接下来，我们就继续分析AwContents成员函数nativeInit和setNewAwContents的实现，以便了解AndroidWebView在Native层ContentViewCore对象的过程，为接下来分析Chromium渲染引擎的Render端的启动过程做准备。  
+       AwContents成员函数nativeInit是一个JNI方法，它由C++层的函数Java_com_android_org_chromium_android_1webview_AwContents_nativeInit实现，如下所示：  
+[cpp] view plain copy
+__attribute__((visibility("default")))  
+jlong  
+    Java_com_android_org_chromium_android_1webview_AwContents_nativeInit(JNIEnv*      env, jclass jcaller,  
+    jobject browserContext) {  
+  return Init(env, jcaller, browserContext);  }  
+       这个函数定义在文件out/target/product/generic/obj/GYP/shared_intermediates/android_webview/jni/AwContents_jni.h中。 
+       函数Java_com_android_org_chromium_android_1webview_AwContents_nativeInit调用另外一个函数Init创建一个WebContents对象，并且使用这个WebContents对象创建一个Native层的AwContents对象，如下所示：  
+[cpp] view plain copy
+static jlong Init(JNIEnv* env, jclass, jobject browser_context) {    ......  
+  scoped_ptr<WebContents> web_contents(content::WebContents::Create(  
+      content::WebContents::CreateParams(AwBrowserContext::GetDefault())));    ......  
+  return reinterpret_cast<intptr_t>(new AwContents(web_contents.Pass()));  }  
+       这个函数定义在文件external/chromium_org/android_webview/native/aw_contents.cc中。 
+       函数Init是通过调用WebContents类的静态成员函数Create创建一个WebContents对象的。WebContents类的静态成员函数Create的实现，可以参考前面一文。  
+       创建了一个WebContents对象之后，函数Init就使用它来创建一个Native层的AwContents对象，如下所示：  
+[cpp] view plain copy
+AwContents::AwContents(scoped_ptr<WebContents> web_contents)      : web_contents_(web_contents.Pass()),        shared_renderer_state_(  
+          BrowserThread::GetMessageLoopProxyForThread(BrowserThread::UI),            this),  
+      browser_view_renderer_(            this,  
+          &shared_renderer_state_,            web_contents_.get(),  
+          BrowserThread::GetMessageLoopProxyForThread(BrowserThread::UI)),       ...... {    ......  }  
+       这个函数定义在文件external/chromium_org/android_webview/native/aw_contents.cc
+中。 
+       AwContents类的构造函数首先将参数web_contents指向的WebContents对象保存在成员变量web_contents_中，接下来又会分别构造一个SharedRendererState对象和一个BrowserViewRenderer对象，并且保存在成员变量shared_renderer_state_和browser_view_renderer_中。  
+       通过AwContents类的成员变量shared_renderer_state_描述的SharedRendererState对象，Chromium渲染引擎的Browser端和Render端可以请求App的Render Thread执行GPU命令。同时，这个SharedRendererState对象也会用来保存Chromium渲染引擎的Render端渲染的每一帧数据。这些帧数据将会交给Chromium渲染引擎的Browser端合成显示在屏幕上。  
+       通过AwContents类的成员变量browser_view_renderer_描述的BrowserViewRenderer对象，则可以为Chromium渲染引擎的Render端创建一个SynchronousCompositor。这个SynchronousCompositor可以用来将网页的CCLayerTree渲染在一个SynchronousCompositor Output Surface上。  
+       接下来我们就继续分析上述SharedRendererState对象和BrowserViewRenderer对象的构造过程。  
+       SharedRendererState对象的构造过程，也就是SharedRendererState类的构造函数的实现，如下所示：  
+[cpp] view plain copy
+SharedRendererState::SharedRendererState(  
+    scoped_refptr<base::MessageLoopProxy> ui_loop,      BrowserViewRendererClient* client)      : ui_loop_(ui_loop),        client_on_ui_(client),       ...... {    ......  }  
+       这个函数定义在文件external/chromium_org/android_webview$vibrowser/shared_renderer_state.cc中。 
+       参数ui_loop描述的是一个NativeUIMessageLoop。这个NativeUIMessageLoop是通过前面调用BrowserThread类的静态成员函数GetMessageLoopProxyForThread获得的。这个Native UI Message Loop会保存在SharedRendererState类的成员变量ui_loop_。以后通过这个成员变量，就可以向App的Render Thread请求执行GPU操作了。  
+       另外一个参数client指向的就是前面创建的AwContents对象。这个AwContents对象会保存在SharedRendererState类的成员变量client_on_ui_中。  
+       BrowserViewRenderer对象的构造过程，也就是BrowserViewRenderer类的构造函数的实现，如下所示： 
+ 
+[cpp] view plain copy
+BrowserViewRenderer::BrowserViewRenderer(      BrowserViewRendererClient* client,  
+    SharedRendererState* shared_renderer_state,      content::WebContents* web_contents,  
+    const scoped_refptr<base::SingleThreadTaskRunner>& ui_task_runner)      : client_(client),       ...... {    ......  
+  content::SynchronousCompositor::SetClientForWebContents(web_contents_, this);    ......  }  
+       这个函数定义在文件external/chromium_org/android_webview/browser/browser_view_renderer.cc中。 
+       从前面的调用过程可以知道，参数client指向的是前面创建的AwContents对象。这个AwContents对象会保存在BrowserViewRenderer类的成员变量client_中。  
+       BrowserViewRenderer类的构造函数接下来会调用SynchronousCompositor类的静态成员函数SetClientForWebContents创建一个Synchronous Compositor，如下所示：  
+[cpp] view plain copy
+void SynchronousCompositor::SetClientForWebContents(      WebContents* contents,  
+    SynchronousCompositorClient* client) {    ......  
+  if (client) {      ......  
+    SynchronousCompositorImpl::CreateForWebContents(contents);    }  
+  if (SynchronousCompositorImpl* instance =  
+      SynchronousCompositorImpl::FromWebContents(contents)) {      instance->SetClient(client);    }  }  
+       这个函数定义在文件external/chromium_org/content/browser/android/in_process/synchronous_compositor_impl.cc中。        从前面的调用过程可以知道，参数client的值不等于NULL，它指向的是一个BrowserViewRenderer对象。在这种情况下，SynchronousCompositor类的静态成员函数SetClientForWebContents会调用SynchronousCompositorImpl类的静态成员函数CreateForWebContents为前面创建的WebContents对象创建一个Synchronous Compositor。  
+       SynchronousCompositorImpl类的静态成员函数CreateForWebContents是从父类WebContentsUserData<SynchronousCompositorImpl>继承下来的，它的实现如下所示： 
+ 
+[cpp] view plain copytemplate <typename T>  
+class WebContentsUserData : public base::SupportsUserData::Data {   public:  
+  // Creates an object of type T, and attaches it to the specified WebContents.    // If an instance is already attached, does nothing.  
+  static void CreateForWebContents(WebContents* contents) {      ......  
+    if (!FromWebContents(contents))  
+      contents->SetUserData(UserDataKey(), new T(contents));    }     
+  ......  };  
+       这个函数定义在文件external/chromium_org/content/public/browser/web_contents_user_data.h中。 
+       WebContentsUserData<SynchronousCompositorImpl>类的静态成员函数CreateForWebContents首先调用另外一个FromWebContents检查之前是否已经为参数contents描述的WebContents对象创建过一个SynchronousCompositorImpl对象。如果没有创建过，那么就会创建一个，并且保存在该WebContents对象的内部，这是通过调用它的成员函数SetUserData实现的。这里创建出来的SynchronousCompositorImpl对象描述的就是一个ynchronous Compositor。  
+       这一步执行完成后，回到前面分析的SynchronousCompositor类的静态成员函数SetClientForWebContents中，接下来它又会通过SynchronousCompositorImpl类的静态成员函数FromWebContents获得前面创建的SynchronousCompositorImpl对象，并且调用它的成员函数SetClient，用来将参数client指向的BrowserViewRenderer对象保存在内部，如下所示：  
+[cpp] view plain copy
+void SynchronousCompositorImpl::SetClient(  
+    SynchronousCompositorClient* compositor_client) {    DCHECK(CalledOnValidThread());    compositor_client_ = compositor_client;  }  
+      这个函数定义在文件external/chromium_org/content/browser/android/in_process/synchronous_compositor_impl.cc中。       SynchronousCompositorImpl类的成员函数SetClient将参数compositor_client指向的BrowserViewRenderer对象保存在成员变量compositor_client_中。  
+      这一步执行完成后，回到前面分析的Java层的AwContents类的构造函数中，这时候就在Native层创建一个WebContents对象、一个AwContents对象、一个SharedRendererState对象、一个BrowserViewRenderer对象，以及一个SynchronousCompositorImpl对象。这些对
+象后面在启动Chromium渲染引擎的Render端，以及Chromium渲染引擎的Render端渲染网页UI时，都会使用到。  
+       Java层的AwContents类的构造函数接下来会调用另外一个成员函数setNewAwContents在Native层创建一个ContentViewCore对象，如下所示：  
+[java] view plain copy
+public class AwContents {      ......     
+    private void setNewAwContents(long newAwContentsPtr) {          ......     
+        mNativeAwContents = newAwContentsPtr;          ......     
+        long nativeWebContents = nativeGetWebContents(mNativeAwContents);          mContentViewCore = createAndInitializeContentViewCore(  
+                mContainerView, mContext, mInternalAccessAdapter, nativeWebContents,                  new AwGestureStateListener(), mContentViewClient, mZoomControls);          .......      }     
+    ......  }  
+       这个函数定义在文件external/chromium_org/android_webview/java/src/org/chromium/android_webview/AwContents.java中。 
+       从前面的调用过程可以知道，参数newAwContentsPtr描述的是前面在Native层创建的AwContents对象。这个AwContents对象将会保存在AwContents类的成员变量mNativeAwContents中。  
+        AwContents类的成员函数setNewAwContents接下来又会调用另外一个成员函数nativeGetWebContents获得用来创建上述Native层AwContents对象所使用的一个WebContents对象。有了这个WebContents对象之后，就使用它来在Native层创建一个ContentViewCore对象。这是通过调用AwContents类的成员函数createAndInitializeContentViewCore实现的，如下所示：  
+[java] view plain copy
+public class AwContents {      ......     
+    privatestaticContentViewCorecreateAndInitializeContentViewCore(ViewGroupcontainerView,  
+            Contextcontext,InternalAccessDelegateinternalDispatcher,longnativeWebContents,  
+            GestureStateListener gestureStateListener,              ContentViewClient contentViewClient,  
+            ContentViewCore.ZoomControlsDelegate zoomControlsDelegate) {          ContentViewCore contentViewCore = new ContentViewCore(context);  
+        contentViewCore.initialize(containerView, internalDispatcher, nativeWebContents,                  context instanceof Activity ?  
+                        new ActivityWindowAndroid((Activity) context) :  
+                        new WindowAndroid(context.getApplicationContext()));          ......  
+        return contentViewCore;      }     
+    ......  }  
+       这个函数定义在文件external/chromium_org/android_webview/java/src/org/chromium/android_webview/AwContents.java中。 
+       AwContents类的成员函数createAndInitializeContentViewCore首先会创建一个Java层的ContentViewCore对象，然后再调用这个Java层的ContentViewCore对象的成员函数initialize对它进行初始化。在初始化的过程中，就会在Native层创建一个对应的ContentViewCore对象，如下所示：  
+[java] view plain copy
+public class ContentViewCore          implementsNavigationClient,AccessibilityStateChangeListener,ScreenOrientationObserver {      ......     
+    public void initialize(ViewGroup containerView, InternalAccessDelegate internalDispatcher,              long nativeWebContents, WindowAndroid windowAndroid) {          ......     
+        mNativeContentViewCore = nativeInit(  
+                nativeWebContents, viewAndroidNativePointer, windowNativePointer,                  mRetainedJavaScriptObjects);           
+        ......      }     
+    ......  }  
+       这个函数定义在文件
+external/chromium_org/content/public/android/java/src/org/chromium/content/browser/ContentViewCore.java中。 
+       ContentViewCore类的成员函数initialize会调用另外一个成员函数nativeInit在Native层创建一个ContentViewCore对象，并且保存在成员变量mNativeContentViewCore中。在创建这个Native层的ContentViewCore对象的时候，需要使用到参数nativeWebContents描述的一个Native层的WebContents对象。  
+       ContentViewCore类的成员函数nativeInit是一个JNI方法，它由C++层的函数Java_com_android_org_chromium_content_browser_ContentViewCore_nativeInit实现，如下所示：  
+[cpp] view plain copy
+__attribute__((visibility("default")))  jlong  
+    Java_com_android_org_chromium_content_browser_ContentViewCore_nativeInit(JNIEnv*      env, jobject jcaller,      jlong webContentsPtr,      jlong viewAndroidPtr,      jlong windowAndroidPtr,      jobject retainedObjectSet) {  
+  return Init(env, jcaller, webContentsPtr, viewAndroidPtr, windowAndroidPtr,        retainedObjectSet);  }  
+      这个函数定义在文件out/target/product/generic/obj/GYP/shared_intermediates/content/jni/ContentViewCore_jni.h中。       函数Java_com_android_org_chromium_content_browser_ContentViewCore_nativeInit调用另外一个函数Init在Native层创建一个ContentViewCore对象，如下所示：  
+[cpp] view plain copyjlong Init(JNIEnv* env,             jobject obj,  
+           jlong native_web_contents,             jlong view_android,             jlong window_android,  
+           jobject retained_objects_set) {  
+  ContentViewCoreImpl* view = new ContentViewCoreImpl(        env, obj,  
+      reinterpret_cast<WebContents*>(native_web_contents),        reinterpret_cast<ui::ViewAndroid*>(view_android),  
+      reinterpret_cast<ui::WindowAndroid*>(window_android),        retained_objects_set);  
+  return reinterpret_cast<intptr_t>(view);  }  
+       这个函数定义在文件
+external/chromium_org/content/browser/android/content_view_core_impl.cc中。        从这里可以看到，函数Init会使用参数native_web_contents描述的一个WebContents对象以及其它参数在Native层创建一个ContentViewCoreImpl对象。 ContentViewCoreImpl类是从ContentViewCore继承下来的。    
+       ContentViewCoreImpl对象的创建过程，也就是ContentViewCoreImpl类的构造函数的实现，如下所示：  
+[cpp] view plain copy
+ContentViewCoreImpl::ContentViewCoreImpl(      JNIEnv* env,      jobject obj,  
+    WebContents* web_contents,      ui::ViewAndroid* view_android,  
+    ui::WindowAndroid* window_android,      jobject java_bridge_retained_object_set)      : ......,  
+      web_contents_(static_cast<WebContentsImpl*>(web_contents)),       ...... {    ......  }  
+       这个函数定义在文件external/chromium_org/content/browser/android/content_view_core_impl.cc中。 
+       ContentViewCoreImpl类的构造函数会将参数web_contents指向的一个WebContents对象保存在成员变量web_contents_中。以后通过ContentViewCoreImpl类的成员函数LoadUrl加载指定的URL时，就需要使用到这个WebContents对象。  
+       在Java层创建了一个AwContents对象和在Native层创建了一个WebContents对象和一个ContentViewCore对象之后，接下来我们就可以在AndroidWebView中加载指定的URL了。AndroidWebView又会请求Chromium渲染引擎启动一个Render端，并且在这个Render端中加载指定的URL。接下来，我们就从Android WebView中加载URL开始，分析Chromium渲染引擎启动Render端的过程。  
+       Android WebView提供了一个成员函数loadUrl，用来加载指定的URL，如下所示：  
+[java] view plain copy
+public class WebView extends AbsoluteLayout  
+        implements ViewTreeObserver.OnGlobalFocusChangeListener,  
+        ViewGroup.OnHierarchyChangeListener, ViewDebug.HierarchyHandler {      ......     
+    public void loadUrl(String url) {          checkThread();  
+        if (DebugFlags.TRACE_API) Log.d(LOGTAG, "loadUrl=" + url);  
+        mProvider.loadUrl(url);      }     
+    ......  }  
+       这个函数定义在文件frameworks/base/core/java/android/webkit/WebView.java中。        WebView类的成员函数loadUrl首先调用成员函数checkThread检查当前线程是否是创建WebView的线程。如果不是，那么就会抛出一个异常出来。  
+       从前面一文可以知道，WebView类的成员变量mProvider指向的是一个WebViewChromium对象。如果通过前面检查，那么接下来这个WebViewChromium对象的成员函数loadUrl会被调用，用来加载参数url指定的URL，如下所示：  
+[java] view plain copy
+class WebViewChromium implements WebViewProvider,  
+          WebViewProvider.ScrollDelegate, WebViewProvider.ViewDelegate {      ......     
+    @Override  
+    public void loadUrl(String url) {  
+        // Early out to match old WebView implementation          if (url == null) {              return;          }  
+        loadUrl(url, null);      }     
+    ......  }  
+       这个函数定义在文件frameworks/webview/chromium/java/com/android/webview/chromium/WebViewChromium.java中。 
+       WebViewChromium类的成员函数loadUrl调用另外一个重载版本的成员函数loadUrl加载参数url指定的URL，如下所示：  
+[java] view plain copy
+class WebViewChromium implements WebViewProvider,  
+          WebViewProvider.ScrollDelegate, WebViewProvider.ViewDelegate {      ......     
+    @Override  
+    public void loadUrl(final String url, Map<String, String> additionalHttpHeaders) {          ......     
+        LoadUrlParams params = new LoadUrlParams(url);  
+        if (additionalHttpHeaders != null) params.setExtraHeaders(additionalHttpHeaders);          loadUrlOnUiThread(params);      }     
+    ......  }  
+       这个函数定义在文件frameworks/webview/chromium/java/com/android/webview/chromium/WebViewChromium.java中。 
+       WebViewChromium类重载版本的成员函数loadUrl将参数url和additinalHttpHeaders封装一个LoadUrlParams对象中，然后再传这个LoadUrlParams对象传递给另外一个成员函数loadUrlonUiThread，如下所示：  
+[java] view plain copy
+class WebViewChromium implements WebViewProvider,  
+          WebViewProvider.ScrollDelegate, WebViewProvider.ViewDelegate {      ......     
+    private void loadUrlOnUiThread(final LoadUrlParams loadUrlParams) {          ......  
+        if (checkNeedsPost()) {  
+            // Disallowed in WebView API for apps targetting a new SDK  
+            assert mAppTargetSdkVersion < Build.VERSION_CODES.JELLY_BEAN_MR2;              mRunQueue.addTask(new Runnable() {                  @Overwww.nc630.comride                  public void run() {  
+                    mAwContents.loadUrl(loadUrlParams);                  }              });              return;          }  
+        mAwContents.loadUrl(loadUrlParams);      }     
+    ......  }  
+       这个函数定义在文件frameworks/webview/chromium/java/com/android/webview/chromium/WebViewChromium.java中。 
+       WebViewChromium类的成员函数LoadUrlParams会调用成员函数checkNeedsPost检查当前线程是否就是WebView的创建线程。如果不是，并且当前的Android版本小于4.3，那么就会向WebView的创建线程的消息队列发送一个Runnable。当该Runnable被执行的时候，才会调用WebViewChromium类的成员变量mAwContents指向的一个AwContents对象
+的成员函数loadUrl加载参数loadUrlParam描述的URL。  
+       注意，如果当前线程不是WebView的创建线程，并且当前的Android版本大于等于4.3，那么WebViewChromium类的成员函数LoadUrlParams是不允许调用的。在我们这个情景中，前面已经保证了当前线程就是WebView的创建线程。在这种情况下，WebViewChromium类的成员函数LoadUrlParams就会直接调用成员变量mAwContents指向的一个AwContents对象的成员函数loadUrl加载参数loadUrlParam描述的URL，如下所示：  
+[java] view plain copy
+public class AwContents {      ......     
+    public void loadUrl(LoadUrlParams params) {          ......     
+        mContentViewCore.loadUrl(params);     
+        ......      }     
+    ......  }  
+       这个函数定义在文件external/chromium_org/android_webview/java/src/org/chromium/android_webview/AwContents.java中。 
+       从前面的分析可以知道，AwContents类的成员变量mContentViewCore指向的是一个ContentViewCore对象。AwContents类的成员函数loadUrl调用这个ContentViewCore对象的成员函数loadUrl加载参数params描述的URL。  
+       ContentViewCore类的成员函数loadUrl加载指定URL的过程可以参考前面一文。在加载的过程中，会创建一个RenderViewHostImpl对象。从前面一文又可以知道，在创建这个RenderViewHostImpl对象的过程中，又会创建一个RenderProcessHostImpl对象描述一个Render端。接下来这个RenderProcessHostImpl对象的成员函数Init又会被调用。在调用的过程中，它就会判断是要创建一个Render进程还是一个Render线程描述一个Render端，如下所示：  
+[cpp] view plain copy
+bool RenderProcessHostImpl::Init() {        ......         
+  if (run_renderer_in_process()) {        ......    
+    in_process_renderer_.reset(g_renderer_main_thread_factory(channel_id));         
+    base::Thread::Options options;        ......    
+    options.message_loop_type = base::MessageLoop::TYPE_DEFAULT;             
+    in_process_renderer_->StartWithOptions(options);        ......      } else {        ......         
+    child_process_launcher_.reset(new ChildProcessLauncher(    
+        new RendererSandboxedProcessLauncherDelegate(channel_.get()),            cmd_line,            GetID(),            this));         
+    ......      }         
+  return true;    }           这个函数定义在文件external/chromium_org/content/browser/renderer_host/render_process_host_impl.cc中。 
+       RenderProcessHostImpl类的成员函数Init调用另外一个成员函数run_renderer_in_process判断要创建一个Render进程还是一个Render线程描述一个Render端。  
+       RenderProcessHostImpl类的成员函数run_renderer_in_process是从父类RenderProcessHost继承下来的，它的实现如下所示：  
+[cpp] view plain copy
+bool g_run_renderer_in_process_ = false;     ......     
+bool RenderProcessHost::run_renderer_in_process() {    return g_run_renderer_in_process_;  }  
+      这个函数定义在文件external/chromium_org/content/browser/renderer_host/render_process_host_impl.cc中。 
+      RenderProcessHostImpl类的成员函数run_renderer_in_process返回的是全局变量g_run_renderer_in_process_的值。从前面的分析可以知道，这个全局变量g_run_renderer_in_process_已经被AndroidWebView设置为true。因此，RenderProcessHostImpl类的成员函数Init会创建一个Render线程来描述一个Render端。  
+      这个Render线程是通过调用另外一个全局变量g_renderer_main_thread_factory描述的一个线程创建工厂函数创建的。从前面的分析可以知道，这个全局变量g_renderer_main_thread_factory描述的线程创建工厂函数为CreateInProcessRendererThread，它的实现如下所示：  
+[cpp] view plain copy
+base::Thread* CreateInProcessRendererThread(const std::string& channel_id) {    return new InProcessRendererThread(channel_id);  }  
+       这个函数定义在文件external/chromium_org/content/renderer/in_process_renderer_thread.cc中。 
+       从这里可以看到，函数为CreateInProcessRendererThread创建的是一个InProcessRendererThread对象。这个InProcessRendererThread对象描述的是一个类型为In-Process的Render线程。这个Render线程在RenderProcessHostImpl类的成员函数Init中将会被启动起来。这时候AndroidWebView就将Chromium渲染引擎的Render端启动起来了。  
+       最后，我们分析Chromium渲染引擎的GPU端。由于Android WebView要求Chromium渲染引擎使用App的Render Thread来执行GPU命令，因此Chromium渲染引擎的GPU端是通过App的Render Thread描述的，它的启动过程可以参考前面这个系列的文章。  
+       为了让Chromium渲染引擎可以使用App的Render Thread执行GPU命令，Chromium的android_webview模块会创建一个DeferredGpuCommandService服务。这个DeferredGpuCommandService服务将会负责请求App的RenderThread执行Chromium渲染引擎的Render端和Browser端发出来的GPU命令。接下来我们就分析这个DeferredGpuCommandService服务的创建过程。  
+       DeferredGpuCommandService服务是在Android WebView的成员函数onDraw被App的UI线程调用时创建的，因此接下来我们就从AndroidWebView的成员函数onDraw开始分析DeferredGpuCommandService服务的创建过程，如下所示：  
+[java] view plain copy
+public class WebView extends AbsoluteLayout  
+        implements ViewTreeObserver.OnGlobalFocusChangeListener,  
+        ViewGroup.OnHierarchyChangeListener, ViewDebug.HierarchyHandler {      ......     
+    @Override  
+    protected void onDraw(Canvas canvas) {  
+        mProvider.getViewDelegate().onDraw(canvas);      }     
+    ......  }  
+       这个函数定义在文件frameworks/base/core/java/android/webkit/WebView.java中。        前面提到，WebView类的成员变量mProvider指向的是一个WebViewChromium对象。WebView的成员函数onDraw调用这个WebViewChromium对象的成员函数getViewDelegate获得一个View Delegate，如下所示：  
+[java] view plain copy
+class WebViewChromium implements WebViewProvider,  
+          WebViewProvider.ScrollDelegate, WebViewProvider.ViewDelegate {      ......     
+    @Override  
+    // This needs to be kept thread safe!  
+    public WebViewProvider.ViewDelegate getViewDelegate() {          return this;      }     
+    ......  }  
+       这个函数定义在文件frameworks/webview/chromium/java/com/android/webview/chromium/WebViewChromium.java中。 
+       从这里可以看到，WebViewChromium类的成员函数getViewDelegate返回的ViewDelegate就是当前正在处理的WebViewChromium对象。这个WebViewChromium对象返回给WebView类的成员函数onDraw之后，它的成员函数onDraw就会被调用，如下所示：  
+[java] view plain copy
+class WebViewChromium implements WebViewProvider,  
+          WebViewProvider.ScrollDelegate, WebViewProvider.ViewDelegate {      ......     
+    @Override  
+    public void onDraw(final Canvas canvas) {          ......  
+        if (checkNeedsPost()) {  
+            runVoidTaskOnUiThreadBlocking(new Runnable() {                  @Override  
+                public void run() {                      onDraw(canvas);                  }              });              return;          }  
+        mAwContents.onDraw(canvas);      }  
+   
+    ......  }  
+       这个函数定义在文件frameworks/webview/chromium/java/com/android/webview/chromium/WebViewChromium.java中。 
+       WebViewChromium类的成员函数onDraw首先会调用成员函数checkNeedsPost检查当前线程是否就是WebView的创建线程。如果不是，那么就会向WebView的创建线程的消息队列发送一个Runnable。当该Runnable被执行的时候，才会重新进入WebViewChromium类的成员函数onDraw中，并且调用它的成员变量mAwContents指向的一个AwContents对象的成员函数onDraw，用来绘制网页的UI。  
+       如果当前线程就是WebView的创建线程，那么WebViewChromium类的成员函数onDraw就会直接调用成员变量mAwContents指向的一个AwContents对象的成员函数onDraw绘制网页的UI。  
+       AwContents类的成员函数onDraw的实现如下所示：  
+[java] view plain copy
+public class AwContents {      ......     
+    public void onDraw(Canvas canvas) {          mAwViewMethods.onDraw(canvas);      }     
+    ......  }  
+       这个函数定义在文件external/chromium_org/android_webview/java/src/org/chromium/android_webview/AwContents.java中。 
+       AwContents类的成员变量mAwViewMethods指向的是一个AwViewMethodsImpl对象。AwContents类的成员函数onDraw调用这个AwViewMethodsImpl对象的成员函数onDraw绘制网页的UI，如下所示：  
+[java] view plain copy
+public class AwContents {      ......     
+    private long mNativeAwContents;      ......      
+    private class AwViewMethodsImpl implements AwViewMethods {          ......  
+   
+        @Override  
+        public void onDraw(Canvas canvas) {              ......     
+            if (!nativeOnDraw(mNativeAwContents, canvas, canvas.isHardwareAccelerated(),                      mContainerView.getScrollX(), mContainerView.getScrollY(),                      globalVisibleRect.left, globalVisibleRect.top,  
+                    globalVisibleRect.right, globalVisibleRect.bottom)) {                  ......              }     
+            ......          }     
+        ......      }     
+    ......  }  
+       这个函数定义在文件external/chromium_org/android_webview/java/src/org/chromium/android_webview/AwContents.java中。 
+       AwViewMethodsImpl类的成员函数onDraw会调用外部类AwContents的成员函数nativeOnDraw绘制网页的UI，并且会将外部类的成员变量mNativeAwContents描述的一个Native层的AwContents对象传递给它。  
+       AwContents类的成员函数nativeOnDraw是一个JNI方法，它由C++层的函数Java_com_android_org_chromium_android_1webview_AwContents_nativeOnDraw实现，如下所示：  
+[cpp] view plain copy
+__attribute__((visibility("default")))  jboolean      
+Java_com_android_org_chromium_android_1webview_AwContents_nativeOnDraw(JNIEnv*      env,  
+    jobject jcaller,  
+    jlong nativeAwContents,      jobject canvas,  
+    jboolean isHardwareAccelerated,      jint scrollX,      jint scrollY,      jint visibleLeft,  
+    jint visibleTop,      jint visibleRight,      jint visibleBottom) {  
+  AwContents* native = reinterpret_cast<AwContents*>(nativeAwContents);    CHECK_NATIVE_PTR(env, jcaller, native, "OnDraw", false);  
+  return native->OnDraw(env, jcaller, canvas, isHardwareAccelerated, scrollX,        scrollY, visibleLeft, visibleTop, visibleRight, visibleBottom);  }  
+       这个函数定义在文件out/target/product/generic/obj/GYP/shared_intermediates/android_webview/jni/AwContents_jni.h中。 
+       函数Java_com_android_org_chromium_android_1webview_AwContents_nativeOnDraw调用参数nativeAwContents描述的一个Native层AwContents对象的成员函数OnDraw绘制网页的UI，如下所示：  
+[cpp] view plain copy
+bool AwContents::OnDraw(JNIEnv* env,                          jobject obj,                          jobject canvas,  
+                        jboolean is_hardware_accelerated,                          jint scroll_x,                          jint scroll_y,                          jint visible_left,                          jint visible_top,                          jint visible_right,                          jint visible_bottom) {  
+  DCHECK(BrowserThread::CurrentlyOn(BrowserThread::UI));    if (is_hardware_accelerated)  
+    InitializeHardwareDrawIfNeeded();    return browser_view_renderer_.OnDraw(        canvas,  
+      is_hardware_accelerated,  
+      gfx::Vector2d(scroll_x, scroll_y),        gfx::Rect(visible_left,                  visible_top,  
+                visible_right - visible_left,                  visible_bottom - visible_top));  }  
+       这个函数定义在文件external/chromium_org/android_webview/native/aw_contents.cc中。 
+       参数is_hardware_accelerated表示App的UI是否采用硬件加速方式绘制。如果是的话，那么Chromium也会使用硬件加速方式绘制网页的UI。在这种情况下，AwContents类的成员函数OnDraw首先会调用另外一个成员函数InitializeHardwareDrawIfNeeded检查是否
+需要为Chromium初始化一个硬件加速渲染环境。这个硬件加速渲染环境初始化完成后，AwContents类的成员函数OnDraw才会调用成员变量browser_view_renderer_描述的一个BrowserViewRenderer对象的成员函数OnDraw绘制网页的UI。  
+       AwContents类的成员函数InitializeHardwareDrawIfNeeded在为Chromium初始化硬件加速渲染环境的过程中，就会创建一个DeferredGpuCommandService服务，如下所示：  
+[cpp] view plain copy
+void AwContents::InitializeHardwareDrawIfNeeded() {  
+  GLViewRendererManager* manager = GLViewRendererManager::GetInstance();     
+  base::AutoLock lock(render_thread_lock_);  
+  if (renderer_manager_key_ == manager->NullKey()) {  
+    renderer_manager_key_ = manager->PushBack(&shared_renderer_state_);      DeferredGpuCommandService::SetInstance();    }  }  
+       这个函数定义在文件external/chromium_org/android_webview/native/aw_contents.cc中。 
+       在Chromium渲染引擎中，存在一个GLViewRendererManager单例对象。这个GLViewRendererManager单例对象可以通过调用GLViewRendererManager类的静态成员函数GetInstance获得，它用来记录当前有哪些WebView是采用硬件加速方式绘制的。  
+       AwContents类的成员函数InitializeHardwareDrawIfNeeded会检查成员变量renderer_manager_key_的值是否等于一个Null Key。如果等于的话，那么就说明当前正在绘制的WebView还没有初始化过硬件加速渲染环境。这时候AwContents类的成员函数InitializeHardwareDrawIfNeeded就会将成员变量shared_renderer_state_描述的一个SharedRendererState对象添加到上述GLViewRendererManager单例对象中。添加之后，会获得一个Key。这个Key就保存在AwContents类的成员变量renderer_manager_key_。同时，DeferredGpuCommandService类的静态成员函数SetInstance会被调用，用来创建一个DeferredGpuCommandService服务。这时候就表示当前正在绘制的WebView的硬件加速渲染环境初始化好了。  
+        接下来我们继续分析DeferredGpuCommandService类的静态成员函数SetInstance会创建ferredGpuCommandService服务的过程，如下所示：  
+[cpp] view plain copy
+base::LazyInstance<scoped_refptr<DeferredGpuCommandService> >      g_service = LAZY_INSTANCE_INITIALIZER;     ......     
+void DeferredGpuCommandService::SetInstance() {    if (!g_service.Get(www.sm136.com)) {  
+    g_service.Get() = new DeferredGpuCommandService;  
+    content::SynchronousCompositor::SetGpuService(g_service.Get());    }  }     ......     
+DeferredGpuCommandService* DeferredGpuCommandService::GetInstance() {    DCHECK(g_service.Get().get());    return g_service.Get().get();  }  
+       这个函数定义在文件external/chromium_org/android_webview/browser/deferred_gpu_command_service.cc中。 
+       DeferredGpuCommandService类的静态成员函数SetInstance检查全局变量g_service是否已经指向了一个DeferredGpuCommandService对象。如果还没有指向，那么就会创建一个DeferredGpuCommandService对象让它指向。创建出来的DeferredGpuCommandService对象描述的就是一个DeferredGpuCommandService服务。这个DeferredGpuCommandService服务可以通过调用DeferredGpuCommandService类的静态成员函数GetInstance获得。  
+       DeferredGpuCommandService类的静态成员函数SetInstance创建出来的DeferredGpuCommandService服务会被设置为AndroidWebView绘制网页所使用的SynchronousCompositor的GPU服务，这是通过调用SynchronousCompositor类的静态成员函数SetGpuService实现的，如下所示：  
+[cpp] view plain copy
+base::LazyInstance<synchronouscompositorfactoryimpl>::Leaky g_factory =      LAZY_INSTANCE_INITIALIZER;     ......     
+void SynchronousCompositor::SetGpuService(  
+    scoped_refptr<gpu::InProcessCommandBuffer::Service> service) {    g_factory.Get().SetDeferredGpuService(service);  }  
+       这个函数定义在文件external/chromium_org/content/browser/android/in_process/synchronous_compositor_impl.cc中。  
+       全局变量g_factory描述的是一个SynchronousCompositorFactoryImpl对象，SynchronousCompositor类的静态成员函数SetGpuService会将参数service描述的一个DeferredGpuCommandService服务保存在它内部。这个通过调用它的成员函数SetDeferredGpuService实现的，如下所示  
+[cpp] view plain copy
+void SynchronousCompositorFactoryImpl::SetDeferredGpuService(  
+    scoped_refptr<gpu::InProcessCommandBuffer::Service> service) {    DCHECK(!service_);    service_ = service;  }  
+       这个函数定义在文件external/chromium_org/content/browser/android/in_process/synchronous_compositor_factory_impl.cc中。 
+       SynchronousCompositorFactoryImpl类的成员函数SetDeferredGpuService将参数service描述的一个DeferredGpuCommandService服务保存在成员变量service_。  
+       这一步执行完成后，Chromium渲染引擎的Render端以后就会通过保存在SynchronousCompositorFactoryImpl类的成员变量service_中的DeferredGpuCommandService服务来执行GPU命令。这一点我们在接下来一篇文章中再详细分析。  
+       至此，我们就分析完成了AndroidWebView启动Chromium渲染引擎的过程，主要就是启动的Chromium渲染引擎的Browser端和Render端。 
+

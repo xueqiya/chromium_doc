@@ -27,8 +27,12 @@ is_chrome_branded = false
 use_official_google_api_keys = false
 enable_resource_whitelist_generation = true
 enable_nacl = false
+remove_webcore_debug_symbols = true
 proprietary_codecs = true
 ffmpeg_branding = "Chrome"
 android_channel = "stable"
 
-autoninja -C out/Default system_webview_apk
+autoninja -C out/Default content_shell_apk
+
+同步服务器已编译代码：
+rsync -P -avpr --progress --exclude='*/.git/*' --exclude='*.o' --exclude='*.a' --exclude='*/lib.java/*' --exclude='*/lib.unstripped/*' root@192.168.6.100:/root/chromium/src .
