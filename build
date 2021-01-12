@@ -30,6 +30,8 @@ blink_symbol_level = 0
 proprietary_codecs = true
 ffmpeg_branding = "Chrome"
 android_channel = "stable"
+clang_use_chrome_plugins = false
+v8_use_external_startup_data = false
 
 autoninja -C out/release content_shell_apk
 autoninja -C out/release webview_instrumentation_apk
