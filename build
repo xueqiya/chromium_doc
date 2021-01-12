@@ -4,14 +4,14 @@ export https_proxy=http://192.168.9.101:8001
 apt update
 apt install -y sudo git python vim lsb-release
 git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-export PATH="$PATH:/path/to/depot_tools"
+export PATH="$PATH:~/depot_tools"
 source ~/.bashrc
 mkdir ~/chromium && cd ~/chromium
 fetch --nohooks chromium
 gclient sync --nohooks
 cd src
 git fetch --tags
-git checkout -b stable_77 tags/79.0.3945.107
+git checkout -b stable_81 tags/81.0.4044.156
 gclient sync --with_branch_heads --nohooks --job 16
 build/install-build-deps-android.sh
 gclient runhooks
@@ -21,18 +21,21 @@ target_os = "android"
 target_cpu = "arm"
 is_debug = false
 is_official_build = true
-enable_remoting = true
 is_component_build = false
 is_chrome_branded = false
 use_official_google_api_keys = false
 enable_resource_whitelist_generation = true
+enable_remoting = true
 enable_nacl = false
+symbol_level = 0
+blink_symbol_level = 0
 remove_webcore_debug_symbols = true
 proprietary_codecs = true
 ffmpeg_branding = "Chrome"
 android_channel = "stable"
 
 autoninja -C out/Default content_shell_apk
+autoninja -C out/Default webview_instrumentation_apk
 
 同步服务器已编译代码：
 rsync -P -avpr --progress --exclude='*/.git/*' --exclude='*.o' --exclude='*.a' --exclude='*/lib.java/*' --exclude='*/lib.unstripped/*' root@192.168.6.100:/root/chromium/src .
